@@ -1155,7 +1155,11 @@ def create_transparency_panel(response: str, soql_query: str, query_results: Lis
                              'litify_pm__Principal_Attorney__c', 'CreatedDate']
                 
                 # Combine current columns with key fields, remove duplicates
-                default_selection = list(dict.fromkeys(current_columns + [f for f in key_fields if f in field_options]))
+                # IMPORTANT FIX: Only include fields that actually exist in field_options
+                default_selection = []
+                for field in current_columns + key_fields:
+                    if field in field_options and field not in default_selection:
+                        default_selection.append(field)
                 
                 # Limit to first 12 for initial display
                 if len(default_selection) > 12:
@@ -1176,28 +1180,45 @@ def create_transparency_panel(response: str, soql_query: str, query_results: Lis
                     if st.button("🔄 Refresh Table with Selected Fields", key=f"refresh_{panel_key}"):
                         with st.spinner("Fetching data with selected fields..."):
                             # Build new SOQL query with selected fields
-                            if 'WHERE' in soql_query.upper():
-                                base_query = soql_query.split('WHERE')[1]
-                                new_query = f"SELECT {', '.join(selected_fields)} FROM litify_pm__Matter__c WHERE {base_query}"
-                            elif 'FROM' in soql_query.upper():
-                                # Extract the FROM clause and any additional clauses
-                                parts = soql_query.upper().split('FROM')
-                                if len(parts) > 1:
-                                    from_clause = parts[1].strip()
-                                    new_query = f"SELECT {', '.join(selected_fields)} FROM {from_clause}"
+                            try:
+                                if 'WHERE' in soql_query.upper():
+                                    # Split on WHERE and reconstruct
+                                    query_parts = soql_query.split('WHERE', 1)
+                                    if len(query_parts) == 2:
+                                        where_clause = query_parts[1].strip()
+                                        new_query = f"SELECT {', '.join(selected_fields)} FROM litify_pm__Matter__c WHERE {where_clause}"
+                                    else:
+                                        new_query = f"SELECT {', '.join(selected_fields)} FROM litify_pm__Matter__c"
+                                elif 'FROM' in soql_query.upper():
+                                    # Extract the FROM clause and any additional clauses
+                                    parts = soql_query.split('FROM', 1)
+                                    if len(parts) > 1:
+                                        from_part = parts[1].strip()
+                                        # Check if there are additional clauses after the table name
+                                        from_parts = from_part.split()
+                                        if len(from_parts) > 1:
+                                            table_name = from_parts[0]
+                                            additional_clauses = ' '.join(from_parts[1:])
+                                            new_query = f"SELECT {', '.join(selected_fields)} FROM {table_name} {additional_clauses}"
+                                        else:
+                                            new_query = f"SELECT {', '.join(selected_fields)} FROM {from_part}"
+                                    else:
+                                        new_query = f"SELECT {', '.join(selected_fields)} FROM litify_pm__Matter__c"
                                 else:
                                     new_query = f"SELECT {', '.join(selected_fields)} FROM litify_pm__Matter__c"
-                            else:
-                                new_query = f"SELECT {', '.join(selected_fields)} FROM litify_pm__Matter__c"
-                            
-                            # Execute new query
-                            new_results = st.session_state.assistant.execute_query(new_query)
-                            
-                            if new_results:
-                                df = pd.DataFrame(new_results)
-                                st.success(f"✅ Updated table with {len(df)} records and {len(selected_fields)} fields")
-                            else:
-                                st.error("❌ Failed to fetch data with selected fields")
+                                
+                                # Execute new query
+                                new_results = st.session_state.assistant.execute_query(new_query)
+                                
+                                if new_results:
+                                    df = pd.DataFrame(new_results)
+                                    st.success(f"✅ Updated table with {len(df)} records and {len(selected_fields)} fields")
+                                else:
+                                    st.error("❌ Failed to fetch data with selected fields")
+                                    
+                            except Exception as e:
+                                st.error(f"❌ Error building new query: {e}")
+                                st.info("💡 Using original data instead")
             
             # Display the data table
             if not df.empty:
@@ -1211,25 +1232,36 @@ def create_transparency_panel(response: str, soql_query: str, query_results: Lis
                         return 'background-color: #e8f4f8; font-weight: bold;'
                     return ''
                 
-                # Style the dataframe
-                styled_df = df.style.apply(lambda x: [highlight_key_columns(val, x.name) for val in x], axis=0)
-                
-                # Display with formatting
-                st.dataframe(
-                    styled_df,
-                    use_container_width=True,
-                    height=400
-                )
+                try:
+                    # Style the dataframe
+                    styled_df = df.style.apply(lambda x: [highlight_key_columns(val, x.name) for val in x], axis=0)
+                    
+                    # Display with formatting
+                    st.dataframe(
+                        styled_df,
+                        use_container_width=True,
+                        height=400
+                    )
+                except Exception as e:
+                    # Fallback to plain dataframe if styling fails
+                    st.dataframe(
+                        df,
+                        use_container_width=True,
+                        height=400
+                    )
                 
                 # Download option
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="💾 Download Data as CSV",
-                    data=csv,
-                    file_name=f"legal_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    key=f"download_{panel_key}"
-                )
+                try:
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label="💾 Download Data as CSV",
+                        data=csv,
+                        file_name=f"legal_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        key=f"download_{panel_key}"
+                    )
+                except Exception as e:
+                    st.warning(f"⚠️ Download not available: {e}")
             
             # Close button
             if st.button("❌ Close Query Details", key=f"close_{panel_key}"):
