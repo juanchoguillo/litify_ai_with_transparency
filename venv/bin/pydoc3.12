@@ -1,0 +1,5 @@
+#!/Users/juancardona/Documents/Legal_Tech/08_21_2025_litify_ai_assistant_demo_with_table/venv/bin/python3.12
+
+import pydoc
+if __name__ == '__main__':
+    pydoc.cli()

@@ -1,0 +1,15 @@
+# tk pkg-config source file
+
+prefix=/Users/juancardona/Documents/Legal_Tech/08_21_2025_litify_ai_assistant_demo_with_table/venv
+exec_prefix=/Users/juancardona/Documents/Legal_Tech/08_21_2025_litify_ai_assistant_demo_with_table/venv
+libdir=/Users/juancardona/Documents/Legal_Tech/08_21_2025_litify_ai_assistant_demo_with_table/venv/lib
+includedir=${prefix}/include
+
+Name: The Tk Toolkit
+Description: Tk is a cross-platform graphical user interface toolkit, the standard GUI not only for Tcl, but for many other dynamic languages as well.
+URL: https://www.tcl-lang.org/
+Version: 8.6.15
+Requires: tcl >= 8.6
+Libs: -L${libdir} -ltk8.6 -ltkstub8.6
+Libs.private:  
+Cflags: -I${includedir}

@@ -1,0 +1,13 @@
+# See: man pkg-config
+prefix=/Users/juancardona/Documents/Legal_Tech/08_21_2025_litify_ai_assistant_demo_with_table/venv
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: Python
+Description: Embed Python into an application
+Requires:
+Version: 3.12
+Libs.private: -ldl  -framework CoreFoundation
+Libs: -L${libdir} -lpython3.12
+Cflags: -I${includedir}/python3.12

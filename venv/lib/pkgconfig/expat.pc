@@ -1,0 +1,13 @@
+prefix=/Users/juancardona/Documents/Legal_Tech/08_21_2025_litify_ai_assistant_demo_with_table/venv
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: expat
+Version: 2.7.1
+Description: expat XML parser
+URL: https://libexpat.github.io/
+Libs: -L${libdir} -lexpat
+Libs.private: 
+Cflags: -I${includedir}
+Cflags.private: -DXML_STATIC

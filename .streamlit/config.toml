@@ -1,0 +1,31 @@
+[global]
+# Development mode - set to false for production
+developmentMode = false
+
+# Show error details
+showErrorDetails = false
+
+[server]
+# Port configuration (Streamlit Cloud will override this)
+port = 8501
+
+# Enable CORS for external access
+enableCORS = true
+
+# Enable XSS protection
+enableXsrfProtection = true
+
+# File upload settings
+maxUploadSize = 50
+
+[browser]
+# Don't automatically open browser (for cloud deployment)
+gatherUsageStats = false
+
+[theme]
+# Custom theme for professional appearance
+primaryColor = "#1f77b4"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f8ff"
+textColor = "#262730"
+font = "sans serif"
