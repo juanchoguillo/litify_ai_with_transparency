@@ -1076,22 +1076,26 @@ class LegalAIAssistant:
 
 # TRANSPARENCY FEATURES
 
-def create_transparency_panel(response: str, soql_query: str, query_results: List[Dict], user_question: str):
+def create_transparency_panel(response: str, soql_query: str, query_results: List[Dict], user_question: str, panel_id: str = None):
     """Create transparency panel showing SOQL and interactive table"""
     
     # Only show if we have actual query data
     if not soql_query or not query_results:
         return
     
-    # Create unique key for this transparency panel
-    panel_key = f"transparency_{hash(soql_query + str(len(query_results)))}"
+    # Use provided panel_id or create unique key for this transparency panel
+    if panel_id is None:
+        panel_id = f"transparency_{hash(soql_query + str(len(query_results)))}"
     
-    # Transparency button
-    if st.button("🔍 Show Query Details & Data", key=f"show_{panel_key}", help="See the SOQL query used and explore the data"):
-        st.session_state[f"show_transparency_{panel_key}"] = True
+    # Check if this panel should be shown (from session state)
+    show_key = f"show_transparency_{panel_id}"
+    
+    # Transparency button - MOVED OUTSIDE OF FORMS
+    if st.button("🔍 Show Query Details & Data", key=f"show_{panel_id}", help="See the SOQL query used and explore the data"):
+        st.session_state[show_key] = True
     
     # Show transparency panel if button was clicked
-    if st.session_state.get(f"show_transparency_{panel_key}", False):
+    if st.session_state.get(show_key, False):
         
         with st.expander("🔍 Query Transparency", expanded=True):
             
@@ -1100,7 +1104,7 @@ def create_transparency_panel(response: str, soql_query: str, query_results: Lis
             st.code(soql_query, language="sql")
             
             # Copy button for SOQL
-            if st.button("📋 Copy Query", key=f"copy_{panel_key}"):
+            if st.button("📋 Copy Query", key=f"copy_{panel_id}"):
                 st.success("✅ Query copied to clipboard! (Note: Manual copy from code block above)")
             
             st.markdown("---")
@@ -1171,13 +1175,13 @@ def create_transparency_panel(response: str, soql_query: str, query_results: Lis
                     options=field_options,
                     default=default_selection,
                     format_func=lambda x: field_labels.get(x, x),
-                    key=f"fields_{panel_key}",
+                    key=f"fields_{panel_id}",
                     help="Choose which fields to show in the data table. Key fields are highlighted by default."
                 )
                 
                 if selected_fields:
                     # Create new query with selected fields
-                    if st.button("🔄 Refresh Table with Selected Fields", key=f"refresh_{panel_key}"):
+                    if st.button("🔄 Refresh Table with Selected Fields", key=f"refresh_{panel_id}"):
                         with st.spinner("Fetching data with selected fields..."):
                             # Build new SOQL query with selected fields
                             try:
@@ -1258,17 +1262,16 @@ def create_transparency_panel(response: str, soql_query: str, query_results: Lis
                         data=csv,
                         file_name=f"legal_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv",
-                        key=f"download_{panel_key}"
+                        key=f"download_{panel_id}"
                     )
                 except Exception as e:
                     st.warning(f"⚠️ Download not available: {e}")
             
             # Close button
-            if st.button("❌ Close Query Details", key=f"close_{panel_key}"):
-                st.session_state[f"show_transparency_{panel_key}"] = False
+            if st.button("❌ Close Query Details", key=f"close_{panel_id}"):
+                st.session_state[show_key] = False
                 st.rerun()
 
-# Enhanced helper functions for chat interface
 def display_enhanced_chat_message(message, is_user=True, message_id=None, show_transparency_data=None):
     """Display chat message with enhanced indicators and transparency option"""
     
@@ -1296,10 +1299,12 @@ def display_enhanced_chat_message(message, is_user=True, message_id=None, show_t
         """, unsafe_allow_html=True)
         
         # Add transparency panel if we have query data
+        # FIXED: Create unique panel ID and move outside form context
         if show_transparency_data and len(show_transparency_data) == 3:
             response, soql_query, query_results = show_transparency_data
             if soql_query and query_results:  # Only show if we have actual query data
-                create_transparency_panel(response, soql_query, query_results, message)
+                unique_panel_id = f"chat_msg_{message_id}_{hash(str(show_transparency_data))}"
+                create_transparency_panel(response, soql_query, query_results, message, unique_panel_id)
 
 def get_smart_placeholder(chat_history):
     """Generate smart placeholder text based on conversation history"""
@@ -1604,7 +1609,7 @@ def display_chat_message(message, is_user=True):
         """, unsafe_allow_html=True)
 
 def chat_mode():
-    """Enhanced Chat Mode Interface with transparency features"""
+    """Enhanced Chat Mode Interface with transparency features - FIXED FORM ISSUE"""
     st.markdown("### 💬 Chat with your Salesforce/Litify Database")
     st.markdown("💡 **Ask quick questions about your legal data in a conversational way!**")
     
@@ -1670,7 +1675,8 @@ def chat_mode():
         else:
             st.info("👋 Start a conversation by asking a question about your legal matters!")
     
-    # Enhanced chat input with smart suggestions
+    # FIXED: Separate form handling and transparency display
+    # Keep form simple - only for input
     with st.form("chat_form", clear_on_submit=True):
         col1, col2 = st.columns([6, 1])
         with col1:
@@ -1679,184 +1685,75 @@ def chat_mode():
             user_input = st.text_input("Ask a question:", placeholder=placeholder)
         with col2:
             send_button = st.form_submit_button("Send", use_container_width=True)
+    
+    # Handle form submission OUTSIDE the form
+    if send_button and user_input:
+        # Check if we're connected to Salesforce
+        if st.session_state.get('connection_status') != 'connected':
+            st.error("❌ Not connected to Salesforce/Litify. Please check your credentials and try reconnecting.")
+            return
         
-        if send_button and user_input:
-            # Check if we're connected to Salesforce
-            if st.session_state.get('connection_status') != 'connected':
-                st.error("❌ Not connected to Salesforce/Litify. Please check your credentials and try reconnecting.")
-                return
-            
-            # Add user message to history immediately
-            display_enhanced_chat_message(user_input, is_user=True, message_id=len(st.session_state.chat_history))
-            
-            # Enhanced response generation with transparency
-            with st.spinner("🤖 Analyzing..."):
-                try:
-                    # Check if we'll use history or database
-                    will_use_history = check_if_history_sufficient(user_input, st.session_state.chat_history)
-                    
-                    if will_use_history:
-                        st.info("💭 Using conversation history (faster response)")
-                    else:
-                        st.info("🔍 Querying Salesforce/Litify database for fresh data")
-                    
-                    # Get response with transparency data
-                    response, soql_query, query_results = st.session_state.assistant.process_chat_with_transparency(
-                        user_input, st.session_state.chat_history
-                    )
-                    
-                    # Prepare transparency data
-                    transparency_data = None
-                    if soql_query and query_results:
-                        transparency_data = (response, soql_query, query_results)
-                    
-                    # Display assistant response with transparency
-                    display_enhanced_chat_message(
-                        response, 
-                        is_user=False, 
-                        message_id=len(st.session_state.chat_history),
-                        show_transparency_data=transparency_data
-                    )
-                    
-                    # Prepare chat history entry
-                    chat_entry = {
-                        'user': user_input,
-                        'assistant': response,
-                        'timestamp': datetime.now().isoformat(),
-                        'used_history': will_use_history
-                    }
-                    
-                    # Add transparency data if available
-                    if soql_query and query_results:
-                        chat_entry['transparency'] = {
-                            'soql': soql_query,
-                            'results': query_results
-                        }
-                    
-                    # Add to chat history
-                    st.session_state.chat_history.append(chat_entry)
-                    
-                    # Rerun to update the display
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
-                    st.info("💡 This might be a connection issue. Try refreshing the page or reconfiguring your credentials.")
-        elif send_button:
-            st.warning("Please enter a question.")
-
-def predefined_questions_mode():
-    """Predefined Questions Interface with transparency features"""
-    st.markdown("### 📋 Quick Demo Questions")
-    st.markdown("💡 **Click any question to get instant insights from your Salesforce/Litify database**")
-    
-    # Display connection status
-    display_connection_status()
-    
-    if st.session_state.get('connection_status') != 'connected':
-        st.warning("⚠️ Not connected to Salesforce/Litify. Please check your credentials and refresh the page.")
-        return
-    
-    # Demo queries
-    demo_queries = [
-        "How many total matters do we have in the system?",
-        "What's our total matter value across all cases?",
-        "How many matters are currently active or open?",
-        "Show me the breakdown of matters by status",
-        "How many contingency fee cases do we have?",
-        "What's the total gross recovery amount?",
-        "How many billable matters do we track?",
-        "Show me matters opened this year",
-        "How many cases involve minors?",
-        "What's our total billed amount across all matters?",
-        "How many matters have serious injuries?",
-        "Show me the total hours tracked across all cases"
-    ]
-    
-    # Initialize session state for tracking answered questions
-    if 'answered_questions' not in st.session_state:
-        st.session_state.answered_questions = {}
-    
-    # Display questions with answers below each one
-    for i, query in enumerate(demo_queries):
-        # Create a container for each question
-        question_container = st.container()
+        # Add user message to history immediately
+        display_enhanced_chat_message(user_input, is_user=True, message_id=len(st.session_state.chat_history))
         
-        with question_container:
-            # Question header with button
-            col1, col2 = st.columns([5, 1])
-            
-            with col1:
-                st.markdown(f"**{i+1}.** {query}")
-            
-            with col2:
-                button_key = f"demo_{i}"
-                if st.button("🔍 Ask", key=button_key, use_container_width=True):
-                    # Process the query when button is clicked
-                    with st.spinner("🔄 Processing query..."):
-                        try:
-                            response, soql_query, query_results = st.session_state.assistant.process_query_with_transparency(query)
-                            # Store the answer with transparency data in session state
-                            st.session_state.answered_questions[i] = {
-                                'response': response,
-                                'soql': soql_query,
-                                'results': query_results,
-                                'status': 'success'
-                            }
-                            st.rerun()  # Refresh to show the answer
-                        except Exception as e:
-                            st.session_state.answered_questions[i] = {
-                                'response': f"Error: {e}",
-                                'soql': '',
-                                'results': [],
-                                'status': 'error'
-                            }
-                            st.rerun()
-            
-            # Display answer if this question has been answered
-            if i in st.session_state.answered_questions:
-                answer_data = st.session_state.answered_questions[i]
+        # Enhanced response generation with transparency
+        with st.spinner("🤖 Analyzing..."):
+            try:
+                # Check if we'll use history or database
+                will_use_history = check_if_history_sufficient(user_input, st.session_state.chat_history)
                 
-                if answer_data['status'] == 'success':
-                    # Success answer styling
-                    st.success("✅ Query completed!")
-                    st.info(f"**Answer:** {answer_data['response']}")
-                    
-                    # Add transparency panel for predefined questions
-                    if answer_data.get('soql') and answer_data.get('results'):
-                        create_transparency_panel(
-                            answer_data['response'], 
-                            answer_data['soql'], 
-                            answer_data['results'], 
-                            query
-                        )
-                    
+                if will_use_history:
+                    st.info("💭 Using conversation history (faster response)")
                 else:
-                    # Error answer styling
-                    st.error("❌ Query failed!")
-                    st.error(answer_data['response'])
-                    st.info("💡 Please check your Salesforce connection and configuration")
+                    st.info("🔍 Querying Salesforce/Litify database for fresh data")
                 
-                # Add a clear button for this answer
-                if st.button(f"🗑️ Clear Answer", key=f"clear_{i}", help="Clear this answer"):
-                    del st.session_state.answered_questions[i]
-                    st.rerun()
-            
-            # Add separator between questions (except for the last one)
-            if i < len(demo_queries) - 1:
-                st.markdown("---")
-    
-    # Add a clear all answers button at the bottom
-    if st.session_state.answered_questions:
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🗑️ Clear All Answers", use_container_width=True):
-                st.session_state.answered_questions = {}
+                # Get response with transparency data
+                response, soql_query, query_results = st.session_state.assistant.process_chat_with_transparency(
+                    user_input, st.session_state.chat_history
+                )
+                
+                # Prepare transparency data
+                transparency_data = None
+                if soql_query and query_results:
+                    transparency_data = (response, soql_query, query_results)
+                
+                # Display assistant response with transparency
+                display_enhanced_chat_message(
+                    response, 
+                    is_user=False, 
+                    message_id=len(st.session_state.chat_history),
+                    show_transparency_data=transparency_data
+                )
+                
+                # Prepare chat history entry
+                chat_entry = {
+                    'user': user_input,
+                    'assistant': response,
+                    'timestamp': datetime.now().isoformat(),
+                    'used_history': will_use_history
+                }
+                
+                # Add transparency data if available
+                if soql_query and query_results:
+                    chat_entry['transparency'] = {
+                        'soql': soql_query,
+                        'results': query_results
+                    }
+                
+                # Add to chat history
+                st.session_state.chat_history.append(chat_entry)
+                
+                # Rerun to update the display
                 st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
+                st.info("💡 This might be a connection issue. Try refreshing the page or reconfiguring your credentials.")
+    elif send_button:
+        st.warning("Please enter a question.")
 
 def custom_query_mode():
-    """Custom Query Interface with transparency features"""
+    """Custom Query Interface with transparency features - FIXED FORM ISSUE"""
     st.markdown("### 🔍 Custom Data Query")
     st.markdown("💡 **Ask any question about your Salesforce/Litify data in natural language!**")
     
@@ -1906,7 +1803,7 @@ def custom_query_mode():
         - Download results as CSV
         """)
     
-    # Query input form
+    # FIXED: Simple form for input only
     with st.form("custom_query_form"):
         query = st.text_area(
             "Enter your question:",
@@ -1918,30 +1815,145 @@ def custom_query_mode():
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             submitted = st.form_submit_button("🔍 Ask Question", use_container_width=True)
+    
+    # Handle form submission OUTSIDE the form to avoid button conflicts
+    if submitted and query:
+        st.markdown("---")
+        st.markdown(f"**Your Question:** {query}")
         
-        if submitted and query:
-            st.markdown("---")
-            st.markdown(f"**Your Question:** {query}")
+        with st.spinner("🤖 Analyzing your question and querying Salesforce/Litify..."):
+            try:
+                response, soql_query, query_results = st.session_state.assistant.process_query_with_transparency(query)
+                st.success("✅ Query completed successfully!")
+                
+                # Display results
+                st.markdown("**Answer:**")
+                st.info(response)
+                
+                # Add transparency panel with unique ID for custom query
+                if soql_query and query_results:
+                    unique_panel_id = f"custom_query_{hash(query + str(datetime.now().timestamp()))}"
+                    create_transparency_panel(response, soql_query, query_results, query, unique_panel_id)
+                
+            except Exception as e:
+                st.error(f"❌ Error processing query: {e}")
+                st.info("💡 Try rephrasing your question or check if your Salesforce connection is working.")
+                
+    elif submitted:
+        st.warning("⚠️ Please enter a question before submitting.")
+
+def predefined_questions_mode():
+    """Predefined Questions Interface with transparency features - FIXED FORM ISSUE"""
+    st.markdown("### 📋 Quick Demo Questions")
+    st.markdown("💡 **Click any question to get instant insights from your Salesforce/Litify database**")
+    
+    # Display connection status
+    display_connection_status()
+    
+    if st.session_state.get('connection_status') != 'connected':
+        st.warning("⚠️ Not connected to Salesforce/Litify. Please check your credentials and refresh the page.")
+        return
+    
+    # Demo queries
+    demo_queries = [
+        "How many total matters do we have in the system?",
+        "What's our total matter value across all cases?",
+        "How many matters are currently active or open?",
+        "Show me the breakdown of matters by status",
+        "How many contingency fee cases do we have?",
+        "What's the total gross recovery amount?",
+        "How many billable matters do we track?",
+        "Show me matters opened this year",
+        "How many cases involve minors?",
+        "What's our total billed amount across all matters?",
+        "How many matters have serious injuries?",
+        "Show me the total hours tracked across all cases"
+    ]
+    
+    # Initialize session state for tracking answered questions
+    if 'answered_questions' not in st.session_state:
+        st.session_state.answered_questions = {}
+    
+    # Display questions with answers below each one
+    for i, query in enumerate(demo_queries):
+        # Create a container for each question
+        question_container = st.container()
+        
+        with question_container:
+            # Question header with button
+            col1, col2 = st.columns([5, 1])
             
-            with st.spinner("🤖 Analyzing your question and querying Salesforce/Litify..."):
-                try:
-                    response, soql_query, query_results = st.session_state.assistant.process_query_with_transparency(query)
-                    st.success("✅ Query completed successfully!")
+            with col1:
+                st.markdown(f"**{i+1}.** {query}")
+            
+            with col2:
+                button_key = f"demo_{i}"
+                # FIXED: These buttons are NOT in forms, so they work fine
+                if st.button("🔍 Ask", key=button_key, use_container_width=True):
+                    # Process the query when button is clicked
+                    with st.spinner("🔄 Processing query..."):
+                        try:
+                            response, soql_query, query_results = st.session_state.assistant.process_query_with_transparency(query)
+                            # Store the answer with transparency data in session state
+                            st.session_state.answered_questions[i] = {
+                                'response': response,
+                                'soql': soql_query,
+                                'results': query_results,
+                                'status': 'success'
+                            }
+                            st.rerun()  # Refresh to show the answer
+                        except Exception as e:
+                            st.session_state.answered_questions[i] = {
+                                'response': f"Error: {e}",
+                                'soql': '',
+                                'results': [],
+                                'status': 'error'
+                            }
+                            st.rerun()
+            
+            # Display answer if this question has been answered
+            if i in st.session_state.answered_questions:
+                answer_data = st.session_state.answered_questions[i]
+                
+                if answer_data['status'] == 'success':
+                    # Success answer styling
+                    st.success("✅ Query completed!")
+                    st.info(f"**Answer:** {answer_data['response']}")
                     
-                    # Display results
-                    st.markdown("**Answer:**")
-                    st.info(response)
+                    # Add transparency panel for predefined questions with unique ID
+                    if answer_data.get('soql') and answer_data.get('results'):
+                        unique_panel_id = f"predefined_{i}_{hash(query)}"
+                        create_transparency_panel(
+                            answer_data['response'], 
+                            answer_data['soql'], 
+                            answer_data['results'], 
+                            query,
+                            unique_panel_id
+                        )
                     
-                    # Add transparency panel
-                    if soql_query and query_results:
-                        create_transparency_panel(response, soql_query, query_results, query)
-                    
-                except Exception as e:
-                    st.error(f"❌ Error processing query: {e}")
-                    st.info("💡 Try rephrasing your question or check if your Salesforce connection is working.")
-                    
-        elif submitted:
-            st.warning("⚠️ Please enter a question before submitting.")
+                else:
+                    # Error answer styling
+                    st.error("❌ Query failed!")
+                    st.error(answer_data['response'])
+                    st.info("💡 Please check your Salesforce connection and configuration")
+                
+                # Add a clear button for this answer
+                if st.button(f"🗑️ Clear Answer", key=f"clear_{i}", help="Clear this answer"):
+                    del st.session_state.answered_questions[i]
+                    st.rerun()
+            
+            # Add separator between questions (except for the last one)
+            if i < len(demo_queries) - 1:
+                st.markdown("---")
+    
+    # Add a clear all answers button at the bottom
+    if st.session_state.answered_questions:
+        st.markdown("---")
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("🗑️ Clear All Answers", use_container_width=True):
+                st.session_state.answered_questions = {}
+                st.rerun()
 
 def sidebar_content():
     """Enhanced sidebar content with configuration management"""
