@@ -1764,6 +1764,10 @@ def custom_query_mode():
         st.warning("⚠️ Not connected to Salesforce/Litify. Please check your credentials and refresh the page.")
         return
     
+    # Initialize session state for custom query results
+    if 'custom_query_result' not in st.session_state:
+        st.session_state.custom_query_result = None
+    
     # Examples
     with st.expander("💡 Example Custom Questions"):
         current_date = st.session_state.assistant.current_date if st.session_state.get('assistant') else date.today()
@@ -1818,22 +1822,20 @@ def custom_query_mode():
     
     # Handle form submission OUTSIDE the form to avoid button conflicts
     if submitted and query:
-        st.markdown("---")
-        st.markdown(f"**Your Question:** {query}")
-        
         with st.spinner("🤖 Analyzing your question and querying Salesforce/Litify..."):
             try:
                 response, soql_query, query_results = st.session_state.assistant.process_query_with_transparency(query)
-                st.success("✅ Query completed successfully!")
                 
-                # Display results
-                st.markdown("**Answer:**")
-                st.info(response)
+                # Store results in session state so they persist across reruns
+                st.session_state.custom_query_result = {
+                    'query': query,
+                    'response': response,
+                    'soql': soql_query,
+                    'results': query_results,
+                    'timestamp': datetime.now().isoformat()
+                }
                 
-                # Add transparency panel with unique ID for custom query
-                if soql_query and query_results:
-                    unique_panel_id = f"custom_query_{hash(query + str(datetime.now().timestamp()))}"
-                    create_transparency_panel(response, soql_query, query_results, query, unique_panel_id)
+                st.rerun()  # Rerun to display the results
                 
             except Exception as e:
                 st.error(f"❌ Error processing query: {e}")
@@ -1841,6 +1843,28 @@ def custom_query_mode():
                 
     elif submitted:
         st.warning("⚠️ Please enter a question before submitting.")
+    
+    # Display stored results if available
+    if st.session_state.custom_query_result:
+        result = st.session_state.custom_query_result
+        
+        st.markdown("---")
+        st.markdown(f"**Your Question:** {result['query']}")
+        st.success("✅ Query completed successfully!")
+        
+        # Display results
+        st.markdown("**Answer:**")
+        st.info(result['response'])
+        
+        # Add transparency panel with unique ID for custom query
+        if result['soql'] and result['results']:
+            unique_panel_id = f"custom_query_{hash(result['query'] + result['timestamp'])}"
+            create_transparency_panel(result['response'], result['soql'], result['results'], result['query'], unique_panel_id)
+        
+        # Add button to clear results and ask new question
+        if st.button("🗑️ Clear Results & Ask New Question", key="clear_custom_results"):
+            st.session_state.custom_query_result = None
+            st.rerun()
 
 def predefined_questions_mode():
     """Predefined Questions Interface with transparency features - FIXED FORM ISSUE"""
