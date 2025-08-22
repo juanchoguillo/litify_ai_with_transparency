@@ -343,7 +343,38 @@ class LegalAIAssistant:
         print(f"   Current Date: {self.current_date}")
         print(f"   Current Year: {self.current_year}")
         print(f"   Current DateTime: {self.current_datetime_tz.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+
+    def _is_case_lookup_query(self, user_question: str) -> bool:
+        """Detect if user is asking about a specific case/matter"""
+        indicators = [
+            'MAT-', 'case ', 'matter ', 'summary of', 'details of', 'tell me about',
+            'information about', 'show me case', 'show me matter'
+        ]
+        user_lower = user_question.lower()
+        return any(indicator in user_lower for indicator in indicators)
+    
+    def _extract_case_identifier(self, user_question: str) -> str:
+        """Extract case/matter identifier from user question"""
+        # Look for MAT- pattern
+        import re
+        mat_pattern = re.search(r'MAT-\d+', user_question.upper())
+        if mat_pattern:
+            return mat_pattern.group()
         
+        # Look for other patterns - Case numbers, etc.
+        case_patterns = [
+            r'case\s+(\w+[-\w]*)',
+            r'matter\s+(\w+[-\w]*)',
+            r'#(\w+[-\w]*)'
+        ]
+        
+        for pattern in case_patterns:
+            match = re.search(pattern, user_question.lower())
+            if match:
+                return match.group(1)
+        
+        return ""
+
     def get_date_context(self) -> str:
         """Get formatted date context for AI agents"""
         # Calculate common date ranges
@@ -470,11 +501,16 @@ class LegalAIAssistant:
             return []
     
     def generate_soql_query(self, user_question: str) -> str:
-        """Generate SOQL query from natural language using OpenAI"""
+        """Enhanced SOQL generation with specific case handling"""
         
         if not self.openai_client:
             return "SELECT COUNT(Id) FROM litify_pm__Matter__c"
         
+        # Check if this is a case-specific query
+        is_case_lookup = self._is_case_lookup_query(user_question)
+        case_id = self._extract_case_identifier(user_question) if is_case_lookup else ""
+        
+        # Enhanced system prompt for better case handling
         system_prompt = f"""You are an expert Salesforce developer who specializes in legal databases and SOQL queries. 
         
         {self.get_date_context()}
@@ -483,23 +519,90 @@ class LegalAIAssistant:
         
         The database has a main object called 'litify_pm__Matter__c' with these key fields:
         
-        IDENTIFICATION: Id, Name, litify_pm__Display_Name__c, Case_Number__c
-        STATUS & DATES: litify_pm__Status__c (Active, Closed, Pending, Open), litify_pm__Open_Date__c, litify_pm__Close_Date__c, CreatedDate
-        FINANCIAL: litify_pm__Total_Matter_Value__c, litify_pm__Gross_Recovery__c, litify_pm__Net_Recovery__c, litify_pm__Fee_Amount__c
-        SPECIAL: IsMinor__c, IsDeceased__c, Serious_Injury__c, litify_pm__Billable_Matter__c
-        ATTORNEYS: litify_pm__Principal_Attorney__c, litify_pm__Originating_Attorney__c
+        IDENTIFICATION: 
+        - Id (Salesforce ID)
+        - Name (Matter Number like MAT-1712270028)
+        - litify_pm__Display_Name__c (Case display name)
+        - Case_Number__c (Case number)
+        - DB_ID__c (Database ID)
         
-        SOQL Rules:
-        - Use COUNT(Id) instead of COUNT(*)
-        - Always use FROM litify_pm__Matter__c
-        - For boolean fields use = true or = false
-        - For dates use YYYY-MM-DD format
-        - For aggregation, use SUM(), AVG(), COUNT()
+        CASE DETAILS:
+        - litify_pm__Case_Title__c (Case title/description)
+        - litify_pm__Description__c (Detailed description)
+        - litify_pm__Status__c (Active, Closed, Pending, Open)
+        - litify_pm__Practice_Area2__c (Practice area)
+        - litify_pm__Case_Type__c (Case type)
+        - litify_pm__Court__c (Court information)
+        - litify_pm__OpposingParty__c (Opposing party)
+        - litify_pm__Docket_Number__c (Docket number)
         
-        DATE EXAMPLES:
-        - "this year": WHERE litify_pm__Open_Date__c >= {self.current_year}-01-01
-        - "last 30 days": WHERE litify_pm__Open_Date__c >= {self.current_date - timedelta(days=30)}
-        - "YTD": WHERE litify_pm__Open_Date__c >= {self.current_year}-01-01
+        DATES: 
+        - litify_pm__Open_Date__c (Case open date)
+        - litify_pm__Close_Date__c (Case close date)
+        - litify_pm__Incident_date__c (Incident date)
+        - litify_pm__Filed_Date__c (Filed date)
+        - litify_pm__Trial_Date__c (Trial date)
+        - litify_pm__Statute_Of_Limitations__c (Statute of limitations)
+        - CreatedDate, LastModifiedDate
+        
+        FINANCIAL: 
+        - litify_pm__Total_Matter_Value__c (Total case value)
+        - litify_pm__Gross_Recovery__c (Gross recovery)
+        - litify_pm__Net_Recovery__c (Net recovery)
+        - litify_pm__Fee_Amount__c (Fee amount)
+        - litify_pm__Hard_Costs__c (Hard costs)
+        - litify_pm__Soft_Costs__c (Soft costs)
+        - litify_pm__Amount_Due_to_Client__c (Amount due to client)
+        - litify_pm__Billing_Type__c (Contingency, Hourly, etc.)
+        - litify_pm__Contingency_Fee_Rate__c (Contingency rate)
+        
+        ATTORNEYS & TEAM:
+        - litify_pm__Principal_Attorney__c (Principal attorney)
+        - litify_pm__Originating_Attorney__c (Originating attorney)
+        - litify_pm__lit_Case_Manager__c (Case manager)
+        - OwnerId (Case owner)
+        
+        SPECIAL FLAGS:
+        - IsMinor__c (Cases involving minors)
+        - IsDeceased__c (Cases involving deceased)
+        - Serious_Injury__c (Serious injury cases)
+        - litify_pm__Billable_Matter__c (Billable matter flag)
+        
+        IMPORTANT RULES FOR CASE-SPECIFIC QUERIES:
+        
+        1. When someone asks for a "summary" or "details" of a specific case, ALWAYS select comprehensive fields:
+           SELECT Id, Name, litify_pm__Display_Name__c, litify_pm__Case_Title__c, litify_pm__Description__c, 
+                  litify_pm__Status__c, litify_pm__Practice_Area2__c, litify_pm__Open_Date__c, litify_pm__Close_Date__c,
+                  litify_pm__Total_Matter_Value__c, litify_pm__Gross_Recovery__c, litify_pm__Net_Recovery__c,
+                  litify_pm__Principal_Attorney__c, litify_pm__Originating_Attorney__c, litify_pm__Court__c,
+                  litify_pm__OpposingParty__c, litify_pm__Billing_Type__c, litify_pm__Incident_date__c,
+                  IsMinor__c, IsDeceased__c, Serious_Injury__c
+           FROM litify_pm__Matter__c 
+           WHERE Name = 'CASE_IDENTIFIER' OR litify_pm__Display_Name__c LIKE '%CASE_IDENTIFIER%'
+        
+        2. For case lookups, use the Name field or Display Name field to find the specific case
+        
+        3. Never use COUNT() for case-specific queries - always select detailed fields
+        
+        4. For financial summaries, include all relevant financial fields
+        
+        5. For case details, include status, dates, attorneys, and case information
+        
+        CURRENT QUERY CONTEXT:
+        - User Question: "{user_question}"
+        - Is Case Lookup: {is_case_lookup}
+        - Extracted Case ID: "{case_id}"
+        
+        EXAMPLES:
+        
+        Question: "Give me a summary of case MAT-1712270028"
+        → SELECT Id, Name, litify_pm__Display_Name__c, litify_pm__Case_Title__c, litify_pm__Description__c, litify_pm__Status__c, litify_pm__Practice_Area2__c, litify_pm__Open_Date__c, litify_pm__Close_Date__c, litify_pm__Total_Matter_Value__c, litify_pm__Gross_Recovery__c, litify_pm__Principal_Attorney__c, litify_pm__Court__c, litify_pm__Billing_Type__c FROM litify_pm__Matter__c WHERE Name = 'MAT-1712270028'
+        
+        Question: "Tell me about matter ABC-123"
+        → SELECT Id, Name, litify_pm__Display_Name__c, litify_pm__Case_Title__c, litify_pm__Status__c, litify_pm__Open_Date__c, litify_pm__Total_Matter_Value__c, litify_pm__Principal_Attorney__c FROM litify_pm__Matter__c WHERE Name = 'ABC-123' OR litify_pm__Display_Name__c LIKE '%ABC-123%'
+        
+        Question: "How many active cases?"
+        → SELECT COUNT(Id) FROM litify_pm__Matter__c WHERE litify_pm__Status__c = 'Active'
         
         Return ONLY the SOQL query, no explanations."""
         
@@ -510,12 +613,14 @@ class LegalAIAssistant:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Convert this question to SOQL: {user_question}"}
                 ],
-                max_tokens=200,
+                max_tokens=300,  # Increased for longer queries
                 temperature=0.1
             )
             
             soql_query = response.choices[0].message.content.strip()
             soql_query = soql_query.replace('```sql', '').replace('```soql', '').replace('```', '').strip()
+            
+            print(f"🔍 Generated SOQL for '{user_question}': {soql_query}")
             
             return soql_query
             
@@ -524,7 +629,7 @@ class LegalAIAssistant:
             return "SELECT COUNT(Id) FROM litify_pm__Matter__c"
     
     def analyze_results(self, user_question: str, query_results: List[Dict]) -> str:
-        """Analyze query results using OpenAI"""
+        """Enhanced result analysis for detailed case information"""
         
         if not self.openai_client:
             if query_results and len(query_results) > 0:
@@ -534,30 +639,91 @@ class LegalAIAssistant:
                     return f"Found {len(query_results)} records."
             return "No results found."
         
-        system_prompt = f"""You are a legal data analyst who provides SHORT, DIRECT answers about legal database results.
+        # Check if this is a case-specific query
+        is_case_lookup = self._is_case_lookup_query(user_question)
         
-        {self.get_date_context()}
-        
-        Analyze Salesforce/Litify database results and provide clear, concise business insights.
-        
-        Response style:
-        - Keep answers SHORT (2-4 sentences maximum)
-        - Start with the direct answer to the question
-        - Use exact numbers from the database
-        - Include relevant business insights
-        - Format currency properly
-        - Provide date context when relevant
-        
-        Stay factual and professional."""
+        if is_case_lookup and query_results:
+            # Enhanced system prompt for detailed case analysis
+            system_prompt = f"""You are a legal data analyst who provides COMPREHENSIVE, DETAILED case summaries.
+            
+            {self.get_date_context()}
+            
+            When analyzing individual case/matter data, provide a COMPLETE summary that includes:
+            
+            1. **Case Identification**: Matter number, display name, case title
+            2. **Current Status**: Active, closed, pending status with dates
+            3. **Case Details**: Practice area, case type, description, court information
+            4. **Financial Information**: Total value, recoveries, fees, billing type
+            5. **Legal Team**: Principal attorney, originating attorney, case manager
+            6. **Important Dates**: Open date, close date, incident date, trial date
+            7. **Special Characteristics**: Minor involvement, deceased parties, serious injury
+            8. **Opposing Parties**: Who they're against
+            9. **Case Progress**: Current stage and key milestones
+            
+            FORMATTING GUIDELINES:
+            - Use clear section headers with emojis
+            - Include all available data from the database
+            - Format dates in readable format (Month Day, Year)
+            - Format currency properly with $ and commas
+            - Highlight important information
+            - Be comprehensive but organized
+            - If data is missing, note "Not specified" rather than omitting
+            
+            EXAMPLE FORMAT:
+            
+            ## 📋 Case Summary: [Case Number]
+            
+            **📝 Case Details:**
+            - **Matter Number:** [Number]
+            - **Case Title:** [Title]
+            - **Status:** [Status]
+            - **Practice Area:** [Area]
+            
+            **💼 Financial Overview:**
+            - **Total Matter Value:** $[Amount]
+            - **Gross Recovery:** $[Amount]
+            - **Billing Type:** [Type]
+            
+            **👥 Legal Team:**
+            - **Principal Attorney:** [Name]
+            - **Originating Attorney:** [Name]
+            
+            **📅 Key Dates:**
+            - **Opened:** [Date]
+            - **Incident Date:** [Date]
+            
+            **⚖️ Case Information:**
+            - **Court:** [Court]
+            - **Opposing Party:** [Party]
+            - **Description:** [Description]
+            
+            **🚨 Special Considerations:**
+            - [Any special flags like minor involvement, etc.]
+            
+            Make the response informative and professional, like a case briefing for an attorney.
+            """
+        else:
+            # Regular system prompt for non-case queries
+            system_prompt = f"""You are a legal data analyst who provides clear, professional responses.
+            
+            {self.get_date_context()}
+            
+            Analyze the database results and provide insights appropriate to the question asked.
+            
+            For summary questions: Provide 2-4 sentences with key insights
+            For specific data: Present the exact numbers clearly
+            For trends: Highlight patterns and business implications
+            
+            Always be factual and use exact numbers from the database."""
         
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Question: {user_question}\nDatabase Results: {query_results}\n\nProvide a short, direct answer."}
+                    {"role": "user", "content": f"Question: {user_question}\nDatabase Results: {query_results}\n\nProvide a detailed analysis."}
                 ],
-                max_tokens=150,
+                max_tokens=500 if is_case_lookup else 200,  # More tokens for case summaries
                 temperature=0.1
             )
             
@@ -572,7 +738,7 @@ class LegalAIAssistant:
                         return f"Result: ${value:,.0f}"
                     return f"Result: {value}"
                 else:
-                    return f"Found {len(query_results)} records."
+                    return f"Found {len(query_results)} records with detailed information."
             return "No results found."
     
     def process_query_with_transparency(self, user_query: str) -> Tuple[str, str, List[Dict]]:
@@ -625,50 +791,49 @@ class LegalAIAssistant:
         return context
     
     def _generate_contextual_soql_with_history(self, user_message: str, conversation_context: str) -> str:
-        """Generate SOQL query using full conversation context"""
+        """Enhanced contextual SOQL generation with case-specific handling"""
         
         if not self.openai_client:
             return "SELECT COUNT(Id) FROM litify_pm__Matter__c"
+        
+        # Check if this is a case-specific query
+        is_case_lookup = self._is_case_lookup_query(user_message)
+        case_id = self._extract_case_identifier(user_message) if is_case_lookup else ""
         
         system_prompt = f"""You are an expert Salesforce developer who specializes in legal databases and SOQL queries.
         
         {self.get_date_context()}
         
         You understand conversational context and can generate SOQL queries that build upon previous questions and answers.
+        You also handle case-specific queries with comprehensive field selection.
+        
+        CASE-SPECIFIC QUERY DETECTION:
+        - Current query is case lookup: {is_case_lookup}
+        - Extracted case identifier: "{case_id}"
+        
+        FOR CASE-SPECIFIC QUERIES, ALWAYS SELECT COMPREHENSIVE FIELDS:
+        Id, Name, litify_pm__Display_Name__c, litify_pm__Case_Title__c, litify_pm__Description__c, 
+        litify_pm__Status__c, litify_pm__Practice_Area2__c, litify_pm__Open_Date__c, litify_pm__Close_Date__c,
+        litify_pm__Total_Matter_Value__c, litify_pm__Gross_Recovery__c, litify_pm__Net_Recovery__c,
+        litify_pm__Principal_Attorney__c, litify_pm__Originating_Attorney__c, litify_pm__Court__c,
+        litify_pm__OpposingParty__c, litify_pm__Billing_Type__c, litify_pm__Incident_date__c,
+        IsMinor__c, IsDeceased__c, Serious_Injury__c, litify_pm__Docket_Number__c
         
         IMPORTANT CONVERSATIONAL RULES:
         1. When someone asks a follow-up question about "these matters", "those cases", "the ones that are active/open", etc., you MUST apply the follow-up to the same subset from the previous question.
-        2. Pay close attention to the conversation history to understand what subset of data they're referring to.
-        3. Common follow-up patterns:
-        - "What's the money value?" after asking about cases = wants financial totals for those same cases
-        - "How much money?" after a count query = wants SUM of financial fields for same WHERE clause
-        - "What about those?" = asking about the same subset mentioned previously
+        2. For case summaries, NEVER use COUNT() - always select detailed fields
+        3. Pay close attention to the conversation history to understand what subset of data they're referring to.
         
-        The database has a main object called 'litify_pm__Matter__c' with these key fields:
+        The database has the complete field set as defined in the enhanced system.
         
-        IDENTIFICATION: Id, Name, litify_pm__Display_Name__c, Case_Number__c
-        STATUS & DATES: litify_pm__Status__c (Active, Closed, Pending, Open), litify_pm__Open_Date__c, litify_pm__Close_Date__c, CreatedDate
-        FINANCIAL: litify_pm__Total_Matter_Value__c, litify_pm__Gross_Recovery__c, litify_pm__Net_Recovery__c, litify_pm__Fee_Amount__c
-        SPECIAL: IsMinor__c, IsDeceased__c, Serious_Injury__c, litify_pm__Billable_Matter__c
-        ATTORNEYS: litify_pm__Principal_Attorney__c, litify_pm__Originating_Attorney__c
+        ENHANCED EXAMPLES:
         
-        SOQL Rules:
-        - Use COUNT(Id) instead of COUNT(*)
-        - Always use FROM litify_pm__Matter__c
-        - For boolean fields use = true or = false
-        - For dates use YYYY-MM-DD format
-        - For aggregation, use SUM(), AVG(), COUNT()
-        - For active/open cases: WHERE (litify_pm__Status__c = 'Active' OR litify_pm__Status__c = 'Open')
-        
-        EXAMPLES OF CONVERSATIONAL QUERIES:
+        User: "Give me a summary of case MAT-1712270028"
+        → SELECT Id, Name, litify_pm__Display_Name__c, litify_pm__Case_Title__c, litify_pm__Description__c, litify_pm__Status__c, litify_pm__Practice_Area2__c, litify_pm__Open_Date__c, litify_pm__Close_Date__c, litify_pm__Total_Matter_Value__c, litify_pm__Gross_Recovery__c, litify_pm__Principal_Attorney__c, litify_pm__Court__c, litify_pm__OpposingParty__c, litify_pm__Billing_Type__c FROM litify_pm__Matter__c WHERE Name = 'MAT-1712270028'
         
         Previous context: "User asked about active/open matters and got answer about 320 matters"
         Follow-up: "what is the money value for these matters?"
         → SELECT SUM(litify_pm__Total_Matter_Value__c) FROM litify_pm__Matter__c WHERE (litify_pm__Status__c = 'Active' OR litify_pm__Status__c = 'Open') AND litify_pm__Total_Matter_Value__c != null
-        
-        Previous context: "User asked about cases involving minors"
-        Follow-up: "how much money is involved?"
-        → SELECT SUM(litify_pm__Total_Matter_Value__c) FROM litify_pm__Matter__c WHERE IsMinor__c = true AND litify_pm__Total_Matter_Value__c != null
         
         Return ONLY the SOQL query, no explanations."""
         
@@ -682,7 +847,7 @@ class LegalAIAssistant:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": full_prompt}
                 ],
-                max_tokens=200,
+                max_tokens=300,  # Increased for longer queries
                 temperature=0.1
             )
             
@@ -698,6 +863,9 @@ class LegalAIAssistant:
             print(f"Error generating contextual SOQL: {e}")
             return "SELECT COUNT(Id) FROM litify_pm__Matter__c"
         
+    # The issue is in the _generate_conversational_response method
+# It's overriding your enhanced analyze_results method
+
     def _generate_conversational_response(self, user_message: str, query_results: list, conversation_context: str, soql_query: str) -> str:
         """Generate conversational response using query results and conversation context"""
         
@@ -713,6 +881,14 @@ class LegalAIAssistant:
                     return f"Found {len(query_results)} records."
             return "No results found."
         
+        # ADD THIS CHECK FOR CASE-SPECIFIC QUERIES
+        is_case_lookup = self._is_case_lookup_query(user_message)
+        
+        if is_case_lookup and query_results:
+            # For case-specific queries, use the enhanced analyze_results method instead
+            return self.analyze_results(user_message, query_results)
+        
+        # Rest of the existing conversational response logic for non-case queries
         system_prompt = f"""You are a conversational AI assistant that provides natural responses about legal database queries.
 
         {self.get_date_context()}
@@ -736,17 +912,17 @@ class LegalAIAssistant:
         
         Context: Previously answered "320 active/open matters"
         Question: "what is the money value for these matters?"
-        Results: [{{'expr0': 2500000}}]
+        Results: [{'expr0': 2500000}]
         Response: "The total value for those 320 active/open matters is $2,500,000."
         
         Context: Previously answered about minor cases
         Question: "how much money is involved?"
-        Results: [{{'expr0': 750000}}]
+        Results: [{'expr0': 750000}]
         Response: "The total value for matters involving minors is $750,000."
         
         Context: No previous context
         Question: "How many matters are open?"
-        Results: [{{'expr0': 150}}]
+        Results: [{'expr0': 150}]
         Response: "We have 150 matters that are open or active."
         """
         
@@ -757,7 +933,7 @@ class LegalAIAssistant:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": "Generate a conversational response using the exact database values and conversation context."}
                 ],
-                max_tokens=150,
+                max_tokens=300,
                 temperature=0.1
             )
             
@@ -773,7 +949,7 @@ class LegalAIAssistant:
                 else:
                     return f"The result is {value}."
             return "I had trouble generating a response for that question."
-    
+        
     def process_chat_with_transparency(self, user_message: str, conversation_history: list = None) -> Tuple[str, str, List[Dict]]:
         """Process chat message and return response, SOQL, and raw results for transparency"""
         
