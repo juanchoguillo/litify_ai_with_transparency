@@ -608,48 +608,197 @@ class LegalAIAssistant:
     # Enhanced chat methods for conversation handling
     def process_chat(self, user_message: str, conversation_history: list = None) -> str:
         """Process chat message with proper conversational context understanding"""
+        response, _, _ = self.process_chat_with_transparency(user_message, conversation_history)
+        return response
+    
+    def _build_conversation_context(self, conversation_history: list) -> str:
+        """Build conversation context for the LLM"""
+        if not conversation_history:
+            return ""
         
-        if conversation_history is None:
-            conversation_history = []
+        context = "RECENT CONVERSATION CONTEXT:\n"
+        # Include last 3 exchanges for context
+        for msg in conversation_history[-3:]:
+            context += f"User: {msg['user']}\n"
+            context += f"Assistant: {msg['assistant']}\n\n"
         
-        # STEP 1: Check if this is a follow-up question that needs conversational context
-        context_info = self._analyze_conversational_context(user_message, conversation_history)
+        return context
+    
+    def _generate_contextual_soql_with_history(self, user_message: str, conversation_context: str) -> str:
+        """Generate SOQL query using full conversation context"""
         
-        if context_info['needs_context']:
-            # This is a follow-up question - generate query with context
-            return self._handle_contextual_query(user_message, conversation_history, context_info)
-        else:
-            # This is a new question - check simple history first, then database
-            history_context = self._check_simple_history(user_message, conversation_history)
-            if history_context:
-                return self._generate_history_based_response(user_message, history_context, conversation_history)
-            else:
-                return self._query_database_and_respond(user_message, conversation_history)
+        if not self.openai_client:
+            return "SELECT COUNT(Id) FROM litify_pm__Matter__c"
+        
+        system_prompt = f"""You are an expert Salesforce developer who specializes in legal databases and SOQL queries.
+        
+        {self.get_date_context()}
+        
+        You understand conversational context and can generate SOQL queries that build upon previous questions and answers.
+        
+        IMPORTANT CONVERSATIONAL RULES:
+        1. When someone asks a follow-up question about "these matters", "those cases", "the ones that are active/open", etc., you MUST apply the follow-up to the same subset from the previous question.
+        2. Pay close attention to the conversation history to understand what subset of data they're referring to.
+        3. Common follow-up patterns:
+        - "What's the money value?" after asking about cases = wants financial totals for those same cases
+        - "How much money?" after a count query = wants SUM of financial fields for same WHERE clause
+        - "What about those?" = asking about the same subset mentioned previously
+        
+        The database has a main object called 'litify_pm__Matter__c' with these key fields:
+        
+        IDENTIFICATION: Id, Name, litify_pm__Display_Name__c, Case_Number__c
+        STATUS & DATES: litify_pm__Status__c (Active, Closed, Pending, Open), litify_pm__Open_Date__c, litify_pm__Close_Date__c, CreatedDate
+        FINANCIAL: litify_pm__Total_Matter_Value__c, litify_pm__Gross_Recovery__c, litify_pm__Net_Recovery__c, litify_pm__Fee_Amount__c
+        SPECIAL: IsMinor__c, IsDeceased__c, Serious_Injury__c, litify_pm__Billable_Matter__c
+        ATTORNEYS: litify_pm__Principal_Attorney__c, litify_pm__Originating_Attorney__c
+        
+        SOQL Rules:
+        - Use COUNT(Id) instead of COUNT(*)
+        - Always use FROM litify_pm__Matter__c
+        - For boolean fields use = true or = false
+        - For dates use YYYY-MM-DD format
+        - For aggregation, use SUM(), AVG(), COUNT()
+        - For active/open cases: WHERE (litify_pm__Status__c = 'Active' OR litify_pm__Status__c = 'Open')
+        
+        EXAMPLES OF CONVERSATIONAL QUERIES:
+        
+        Previous context: "User asked about active/open matters and got answer about 320 matters"
+        Follow-up: "what is the money value for these matters?"
+        → SELECT SUM(litify_pm__Total_Matter_Value__c) FROM litify_pm__Matter__c WHERE (litify_pm__Status__c = 'Active' OR litify_pm__Status__c = 'Open') AND litify_pm__Total_Matter_Value__c != null
+        
+        Previous context: "User asked about cases involving minors"
+        Follow-up: "how much money is involved?"
+        → SELECT SUM(litify_pm__Total_Matter_Value__c) FROM litify_pm__Matter__c WHERE IsMinor__c = true AND litify_pm__Total_Matter_Value__c != null
+        
+        Return ONLY the SOQL query, no explanations."""
+        
+        try:
+            # Build the prompt with conversation context
+            full_prompt = f"{conversation_context}\nCurrent Question: {user_message}\n\nGenerate the appropriate SOQL query considering the conversation context:"
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": full_prompt}
+                ],
+                max_tokens=200,
+                temperature=0.1
+            )
+            
+            soql_query = response.choices[0].message.content.strip()
+            soql_query = soql_query.replace('```sql', '').replace('```soql', '').replace('```', '').strip()
+            soql_query = soql_query.replace('SOQL:', '').replace('Query:', '').strip()
+            
+            print(f"🔍 Generated contextual SOQL: {soql_query}")
+            
+            return soql_query
+            
+        except Exception as e:
+            print(f"Error generating contextual SOQL: {e}")
+            return "SELECT COUNT(Id) FROM litify_pm__Matter__c"
+        
+    def _generate_conversational_response(self, user_message: str, query_results: list, conversation_context: str, soql_query: str) -> str:
+        """Generate conversational response using query results and conversation context"""
+        
+        if not self.openai_client:
+            # Simple fallback without OpenAI
+            if query_results and len(query_results) > 0:
+                if 'expr0' in query_results[0]:
+                    value = query_results[0]['expr0']
+                    if isinstance(value, (int, float)) and value > 1000:
+                        return f"The total value for those matters is ${value:,.0f}."
+                    return f"The result is {value}."
+                else:
+                    return f"Found {len(query_results)} records."
+            return "No results found."
+        
+        system_prompt = f"""You are a conversational AI assistant that provides natural responses about legal database queries.
 
+        {self.get_date_context()}
+        
+        CONVERSATION CONTEXT:
+        {conversation_context}
+        
+        CURRENT QUESTION: {user_message}
+        DATABASE QUERY: {soql_query}
+        DATABASE RESULTS: {query_results}
+        
+        INSTRUCTIONS:
+        1. Provide a natural, conversational response that acknowledges the context
+        2. If this is a follow-up question, acknowledge what they're referring to
+        3. Use exact numbers from the database results
+        4. Keep responses SHORT (1-2 sentences)
+        5. Format currency properly with commas
+        6. Be direct and helpful
+        
+        EXAMPLES:
+        
+        Context: Previously answered "320 active/open matters"
+        Question: "what is the money value for these matters?"
+        Results: [{{'expr0': 2500000}}]
+        Response: "The total value for those 320 active/open matters is $2,500,000."
+        
+        Context: Previously answered about minor cases
+        Question: "how much money is involved?"
+        Results: [{{'expr0': 750000}}]
+        Response: "The total value for matters involving minors is $750,000."
+        
+        Context: No previous context
+        Question: "How many matters are open?"
+        Results: [{{'expr0': 150}}]
+        Response: "We have 150 matters that are open or active."
+        """
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "Generate a conversational response using the exact database values and conversation context."}
+                ],
+                max_tokens=150,
+                temperature=0.1
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            print(f"Conversational response error: {e}")
+            # Fallback response
+            if query_results and len(query_results) > 0:
+                value = query_results[0].get('expr0', 0)
+                if 'money' in user_message.lower() or 'value' in user_message.lower():
+                    return f"The total value for those matters is ${value:,.0f}."
+                else:
+                    return f"The result is {value}."
+            return "I had trouble generating a response for that question."
+    
     def process_chat_with_transparency(self, user_message: str, conversation_history: list = None) -> Tuple[str, str, List[Dict]]:
         """Process chat message and return response, SOQL, and raw results for transparency"""
         
         if conversation_history is None:
             conversation_history = []
         
-        # STEP 1: Check if this is a follow-up question that needs conversational context
-        context_info = self._analyze_conversational_context(user_message, conversation_history)
+        # Build conversation context for the LLM
+        context = self._build_conversation_context(conversation_history)
         
-        if context_info['needs_context']:
-            # This is a follow-up question - generate query with context
-            response = self._handle_contextual_query(user_message, conversation_history, context_info)
-            # For contextual queries, try to extract the SOQL and results from session state
-            soql = st.session_state.get('last_contextual_soql', '')
-            results = st.session_state.get('last_contextual_results', [])
-            return response, soql, results
-        else:
-            # This is a new question - check simple history first, then database
-            history_context = self._check_simple_history(user_message, conversation_history)
-            if history_context:
-                response = self._generate_history_based_response(user_message, history_context, conversation_history)
-                return response, '', []  # No new query for history-based responses
-            else:
-                return self._query_database_and_respond_with_transparency(user_message, conversation_history)
+        # Generate SOQL query with full conversation context
+        soql_query = self._generate_contextual_soql_with_history(user_message, context)
+        
+        # Execute the query
+        query_results = self.execute_query(soql_query)
+        
+        if not query_results and soql_query != "SELECT COUNT(Id) FROM litify_pm__Matter__c":
+            # Try fallback
+            fallback_query = "SELECT COUNT(Id) FROM litify_pm__Matter__c"
+            query_results = self.execute_query(fallback_query)
+            soql_query = fallback_query
+        
+        # Generate response with conversation context
+        response = self._generate_conversational_response(user_message, query_results, context, soql_query)
+        
+        return response, soql_query, query_results
 
     def _query_database_and_respond_with_transparency(self, user_message: str, conversation_history: list) -> Tuple[str, str, List[Dict]]:
         """Query database and generate response with transparency data"""
@@ -682,63 +831,12 @@ class LegalAIAssistant:
             return "I encountered an error while accessing the database. Could you try rephrasing your question?", "", []
 
     def _analyze_conversational_context(self, user_message: str, conversation_history: list) -> dict:
-        """Analyze if the user message needs conversational context from previous questions"""
-        
-        if not conversation_history:
-            return {'needs_context': False}
-        
-        # Look for follow-up indicators - expanded list for better detection
-        follow_up_phrases = [
-            'these cases', 'those cases', 'these matters', 'those matters',
-            'them', 'those', 'these', 'that group', 'same cases', 'same matters',
-            'how much money', 'what value', 'total value', 'financial',
-            'how many of those', 'what about those', 'details on those',
-            'breakdown of these', 'more info on these', 'the ones that are',
-            'just the ones', 'only the ones', 'the active', 'the open',
-            'active or open', 'those active', 'those open', 'value in money',
-            'money that', 'all these cases', 'together'
-        ]
-        
-        user_lower = user_message.lower()
-        
-        # Check if this looks like a follow-up question
-        is_followup = any(phrase in user_lower for phrase in follow_up_phrases)
-        
-        # Additional check for contextual references
-        contextual_words = ['these', 'those', 'them', 'that', 'the ones', 'just the', 'only the']
-        has_contextual_reference = any(word in user_lower for word in contextual_words)
-        
-        if not is_followup and not has_contextual_reference:
-            return {'needs_context': False}
-        
-        # Find the most recent question that defined a specific subset of data
-        context_from_history = None
-        
-        # Look through recent conversation for context - check more history
-        for msg in reversed(conversation_history[-5:]):  # Check last 5 exchanges
-            user_question = msg['user'].lower()
-            assistant_response = msg['assistant'].lower()
-            
-            # Look for questions that defined a specific subset - improved detection
-            subset_indicators = [
-                'active', 'open', 'closed', 'pending', 'status', 'type', 'involve', 
-                'with', 'that have', 'where', 'matters', 'cases', 'minors', 
-                'currently', 'this year', 'last month', 'recent'
-            ]
-            
-            if any(word in user_question for word in subset_indicators):
-                # This question likely defined a subset - extract the context
-                context_from_history = {
-                    'original_question': msg['user'],
-                    'original_response': msg['assistant'],
-                    'subset_description': user_question
-                }
-                break
-        
+        """Simplified conversational context analysis - ALWAYS process with full context"""
+        # Simplified approach: always use conversation context if available
         return {
-            'needs_context': True,
-            'context': context_from_history,
-            'followup_type': 'financial' if any(word in user_lower for word in ['money', 'value', 'financial', 'cost', 'revenue', 'total', 'amount']) else 'general'
+            'needs_context': len(conversation_history) > 0,
+            'context': conversation_history[-1] if conversation_history else None,
+            'followup_type': 'general'
         }
 
     def _handle_contextual_query(self, user_message: str, conversation_history: list, context_info: dict) -> str:
@@ -1021,37 +1119,8 @@ class LegalAIAssistant:
             return "I'm having trouble processing that request. Could you try asking in a different way?"
 
     def _check_simple_history(self, user_message: str, conversation_history: list) -> str:
-        """Simple check for exact matches in conversation history (not contextual follow-ups)"""
-        
-        if not conversation_history:
-            return ""
-        
-        # Only check for very similar questions, not contextual follow-ups
-        user_lower = user_message.lower()
-        
-        # Skip if this looks like a contextual follow-up - EXPANDED detection
-        contextual_words = [
-            'these', 'those', 'them', 'that group', 'same', 'the ones', 
-            'just the', 'only the', 'active or open', 'money', 'value', 
-            'financial', 'total', 'amount', 'how much', 'what value'
-        ]
-        if any(word in user_lower for word in contextual_words):
-            print(f"DEBUG - Skipping history check for contextual follow-up: {user_message}")
-            return ""
-        
-        # Look for very similar questions in history (only for non-contextual questions)
-        for msg in conversation_history[-3:]:
-            hist_question = msg['user'].lower()
-            
-            # Check if questions are very similar (same key words)
-            user_words = set(user_lower.split())
-            hist_words = set(hist_question.split())
-            
-            # If 80% of words match, consider it the same question (increased threshold)
-            if len(user_words.intersection(hist_words)) / len(user_words.union(hist_words)) > 0.8:
-                print(f"DEBUG - Found similar question in history: {hist_question}")
-                return msg['assistant']
-        
+        """Simplified history check - let the LLM handle context instead"""
+        # Don't try to match history here - let the LLM handle all context
         return ""
 
     def _generate_history_based_response(self, user_message: str, history_context: str, conversation_history: list) -> str:
@@ -1648,7 +1717,7 @@ def display_chat_message(message, is_user=True):
         """, unsafe_allow_html=True)
 
 def chat_mode():
-    """Enhanced Chat Mode Interface with transparency features - FIXED FORM ISSUE"""
+    """Simplified Chat Mode Interface with transparency features"""
     st.markdown("### 💬 Chat with your Salesforce/Litify Database")
     st.markdown("💡 **Ask quick questions about your legal data in a conversational way!**")
     
@@ -1677,8 +1746,9 @@ def chat_mode():
         - "This month's performance?"
         
         **Follow-up Examples:**
-        - After asking "How many matters involve minors?" try "How much money is involved in these cases?"
-        - After asking "Show me active cases" try "What's the total value of those?"
+        - After asking "How many matters are open or active?" try "What's the money value for these matters?"
+        - After asking "Show me cases involving minors" try "How much money is involved in those cases?"
+        - After asking "How many matters opened this year?" try "What's the total value of those?"
         
         **🔍 Transparency Feature:**
         - After each answer, click "Show Query Details & Data" to see the exact SOQL query used
@@ -1689,7 +1759,7 @@ def chat_mode():
     # Performance indicator
     if st.session_state.chat_history:
         total_messages = len(st.session_state.chat_history)
-        st.info(f"🧠 **Smart Memory**: {total_messages} exchanges remembered • 🔍 **Full Transparency**: Click any 'Show Query Details' button to see SOQL queries and data")
+        st.info(f"🧠 **Conversation Memory**: {total_messages} exchanges remembered • 🔍 **Full Transparency**: Click any 'Show Query Details' button to see SOQL queries and data")
     
     # Chat container
     chat_container = st.container()
@@ -1714,8 +1784,7 @@ def chat_mode():
         else:
             st.info("👋 Start a conversation by asking a question about your legal matters!")
     
-    # FIXED: Separate form handling and transparency display
-    # Keep form simple - only for input
+    # Simple form for input only
     with st.form("chat_form", clear_on_submit=True):
         col1, col2 = st.columns([6, 1])
         with col1:
@@ -1735,18 +1804,10 @@ def chat_mode():
         # Add user message to history immediately
         display_enhanced_chat_message(user_input, is_user=True, message_id=len(st.session_state.chat_history))
         
-        # Enhanced response generation with transparency
-        with st.spinner("🤖 Analyzing..."):
+        # Simplified response generation with transparency
+        with st.spinner("🤖 Analyzing your question and querying the database..."):
             try:
-                # Check if we'll use history or database
-                will_use_history = check_if_history_sufficient(user_input, st.session_state.chat_history)
-                
-                if will_use_history:
-                    st.info("💭 Using conversation history (faster response)")
-                else:
-                    st.info("🔍 Querying Salesforce/Litify database for fresh data")
-                
-                # Get response with transparency data
+                # Get response with transparency data using the improved method
                 response, soql_query, query_results = st.session_state.assistant.process_chat_with_transparency(
                     user_input, st.session_state.chat_history
                 )
@@ -1768,8 +1829,7 @@ def chat_mode():
                 chat_entry = {
                     'user': user_input,
                     'assistant': response,
-                    'timestamp': datetime.now().isoformat(),
-                    'used_history': will_use_history
+                    'timestamp': datetime.now().isoformat()
                 }
                 
                 # Add transparency data if available
@@ -1788,6 +1848,7 @@ def chat_mode():
             except Exception as e:
                 st.error(f"❌ Error: {e}")
                 st.info("💡 This might be a connection issue. Try refreshing the page or reconfiguring your credentials.")
+                
     elif send_button:
         st.warning("Please enter a question.")
 
