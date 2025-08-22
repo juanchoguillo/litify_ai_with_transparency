@@ -687,13 +687,16 @@ class LegalAIAssistant:
         if not conversation_history:
             return {'needs_context': False}
         
-        # Look for follow-up indicators
+        # Look for follow-up indicators - expanded list for better detection
         follow_up_phrases = [
             'these cases', 'those cases', 'these matters', 'those matters',
             'them', 'those', 'these', 'that group', 'same cases', 'same matters',
             'how much money', 'what value', 'total value', 'financial',
             'how many of those', 'what about those', 'details on those',
-            'breakdown of these', 'more info on these'
+            'breakdown of these', 'more info on these', 'the ones that are',
+            'just the ones', 'only the ones', 'the active', 'the open',
+            'active or open', 'those active', 'those open', 'value in money',
+            'money that', 'all these cases', 'together'
         ]
         
         user_lower = user_message.lower()
@@ -701,19 +704,29 @@ class LegalAIAssistant:
         # Check if this looks like a follow-up question
         is_followup = any(phrase in user_lower for phrase in follow_up_phrases)
         
-        if not is_followup:
+        # Additional check for contextual references
+        contextual_words = ['these', 'those', 'them', 'that', 'the ones', 'just the', 'only the']
+        has_contextual_reference = any(word in user_lower for word in contextual_words)
+        
+        if not is_followup and not has_contextual_reference:
             return {'needs_context': False}
         
         # Find the most recent question that defined a specific subset of data
         context_from_history = None
         
-        # Look through recent conversation for context
-        for msg in reversed(conversation_history[-3:]):  # Check last 3 exchanges
+        # Look through recent conversation for context - check more history
+        for msg in reversed(conversation_history[-5:]):  # Check last 5 exchanges
             user_question = msg['user'].lower()
             assistant_response = msg['assistant'].lower()
             
-            # Look for questions that defined a specific subset
-            if any(word in user_question for word in ['involve', 'with', 'that have', 'where', 'status', 'type']):
+            # Look for questions that defined a specific subset - improved detection
+            subset_indicators = [
+                'active', 'open', 'closed', 'pending', 'status', 'type', 'involve', 
+                'with', 'that have', 'where', 'matters', 'cases', 'minors', 
+                'currently', 'this year', 'last month', 'recent'
+            ]
+            
+            if any(word in user_question for word in subset_indicators):
                 # This question likely defined a subset - extract the context
                 context_from_history = {
                     'original_question': msg['user'],
@@ -725,7 +738,7 @@ class LegalAIAssistant:
         return {
             'needs_context': True,
             'context': context_from_history,
-            'followup_type': 'financial' if any(word in user_lower for word in ['money', 'value', 'financial', 'cost', 'revenue']) else 'general'
+            'followup_type': 'financial' if any(word in user_lower for word in ['money', 'value', 'financial', 'cost', 'revenue', 'total', 'amount']) else 'general'
         }
 
     def _handle_contextual_query(self, user_message: str, conversation_history: list, context_info: dict) -> str:
@@ -773,7 +786,7 @@ class LegalAIAssistant:
         You understand that when someone asks a follow-up question, they want to apply it to the same subset of data from the previous question.
         
         Available Litify fields:
-        - litify_pm__Status__c (Active, Closed, Pending, Open)
+        - litify_pm__Status__c (values: 'Active', 'Open', 'Closed', 'Pending')
         - IsMinor__c (true/false for cases involving minors)
         - IsDeceased__c (true/false)
         - Serious_Injury__c (true/false)
@@ -787,19 +800,31 @@ class LegalAIAssistant:
         - litify_pm__Principal_Attorney__c
         - litify_pm__Case_Type__c
         
+        CRITICAL: For active/open cases, use WHERE (litify_pm__Status__c = 'Active' OR litify_pm__Status__c = 'Open')
+        
         Examples of contextual queries:
         
-        Previous: "How many matters involve minors?"
+        Previous: "How many matters are currently active or open?"
         Follow-up: "How much money is involved in these cases?"
+        → SELECT SUM(litify_pm__Total_Matter_Value__c) FROM litify_pm__Matter__c WHERE (litify_pm__Status__c = 'Active' OR litify_pm__Status__c = 'Open') AND litify_pm__Total_Matter_Value__c != null
+        
+        Previous: "How many matters involve minors?"
+        Follow-up: "What's the total value of those?"
         → SELECT SUM(litify_pm__Total_Matter_Value__c) FROM litify_pm__Matter__c WHERE IsMinor__c = true AND litify_pm__Total_Matter_Value__c != null
         
         Previous: "Show me active cases"
         Follow-up: "What's the total value of those?"
-        → SELECT SUM(litify_pm__Total_Matter_Value__c) FROM litify_pm__Matter__c WHERE litify_pm__Status__c = 'Active' AND litify_pm__Total_Matter_Value__c != null
+        → SELECT SUM(litify_pm__Total_Matter_Value__c) FROM litify_pm__Matter__c WHERE (litify_pm__Status__c = 'Active' OR litify_pm__Status__c = 'Open') AND litify_pm__Total_Matter_Value__c != null
         
         Previous: "Cases opened this year"
         Follow-up: "How much have we recovered from them?"
         → SELECT SUM(litify_pm__Gross_Recovery__c) FROM litify_pm__Matter__c WHERE litify_pm__Open_Date__c >= {self.current_year}-01-01 AND litify_pm__Gross_Recovery__c != null
+        
+        IMPORTANT RULES:
+        1. Always maintain the WHERE clause from the original question
+        2. For "active or open" always use: (litify_pm__Status__c = 'Active' OR litify_pm__Status__c = 'Open')
+        3. Add appropriate null checks for numeric fields
+        4. Use SUM() for financial totals, COUNT() for counts, AVG() for averages
         
         Return ONLY the SOQL query."""
         
@@ -808,7 +833,7 @@ class LegalAIAssistant:
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"PREVIOUS QUESTION: '{original_question}'\nFOLLOW-UP QUESTION: '{followup_question}'\n\nGenerate a SOQL query that combines the context:"}
+                    {"role": "user", "content": f"PREVIOUS QUESTION: '{original_question}'\nFOLLOW-UP QUESTION: '{followup_question}'\n\nGenerate a SOQL query that applies the follow-up to the same subset from the previous question:"}
                 ],
                 max_tokens=200,
                 temperature=0.1
@@ -817,6 +842,8 @@ class LegalAIAssistant:
             soql_query = response.choices[0].message.content.strip()
             soql_query = soql_query.replace('```sql', '').replace('```soql', '').replace('```', '').strip()
             soql_query = soql_query.replace('SOQL:', '').replace('Query:', '').strip()
+            
+            print(f"🔍 Generated contextual SOQL: {soql_query}")
             
             return soql_query
             
@@ -1002,12 +1029,17 @@ class LegalAIAssistant:
         # Only check for very similar questions, not contextual follow-ups
         user_lower = user_message.lower()
         
-        # Skip if this looks like a contextual follow-up
-        contextual_words = ['these', 'those', 'them', 'that group', 'same']
+        # Skip if this looks like a contextual follow-up - EXPANDED detection
+        contextual_words = [
+            'these', 'those', 'them', 'that group', 'same', 'the ones', 
+            'just the', 'only the', 'active or open', 'money', 'value', 
+            'financial', 'total', 'amount', 'how much', 'what value'
+        ]
         if any(word in user_lower for word in contextual_words):
+            print(f"DEBUG - Skipping history check for contextual follow-up: {user_message}")
             return ""
         
-        # Look for very similar questions in history
+        # Look for very similar questions in history (only for non-contextual questions)
         for msg in conversation_history[-3:]:
             hist_question = msg['user'].lower()
             
@@ -1015,8 +1047,9 @@ class LegalAIAssistant:
             user_words = set(user_lower.split())
             hist_words = set(hist_question.split())
             
-            # If 70% of words match, consider it the same question
-            if len(user_words.intersection(hist_words)) / len(user_words.union(hist_words)) > 0.7:
+            # If 80% of words match, consider it the same question (increased threshold)
+            if len(user_words.intersection(hist_words)) / len(user_words.union(hist_words)) > 0.8:
+                print(f"DEBUG - Found similar question in history: {hist_question}")
                 return msg['assistant']
         
         return ""
@@ -1338,17 +1371,19 @@ def get_smart_placeholder(chat_history):
         return "e.g., Tell me more about that..."
 
 def check_if_history_sufficient(user_input, chat_history):
-    """Quick check to predict if history will be used (for UI indicators)"""
+    """Quick check to predict if history will be used (for UI indicators) - IMPROVED"""
     
     if not chat_history:
         return False
     
-    # Simple heuristics for common follow-up patterns
+    # Simple heuristics for common follow-up patterns - EXPANDED
     follow_up_indicators = [
         'what about', 'how many of those', 'and the', 'tell me more', 
         'which ones', 'any others', 'what else', 'more details',
         'those cases', 'those matters', 'that attorney', 'these cases',
-        'these matters', 'them', 'those', 'that group'
+        'these matters', 'them', 'those', 'that group', 'the ones',
+        'just the', 'only the', 'active or open', 'money', 'value',
+        'how much', 'what value', 'total', 'amount'
     ]
     
     user_lower = user_input.lower()
@@ -1356,16 +1391,20 @@ def check_if_history_sufficient(user_input, chat_history):
     # Check if this looks like a follow-up question
     for indicator in follow_up_indicators:
         if indicator in user_lower:
-            return True
+            print(f"DEBUG - Detected follow-up indicator: {indicator}")
+            return False  # Don't use simple history for follow-ups, use contextual processing
     
-    # Check if asking about data mentioned in recent responses
+    # Check if asking about data mentioned in recent responses (for exact matches only)
     recent_responses = ' '.join([msg['assistant'].lower() for msg in chat_history[-2:]])
     
-    # If user mentions numbers, names, or terms from recent responses
+    # If user mentions numbers, names, or terms from recent responses (but not contextual)
     user_words = user_lower.split()
     for word in user_words:
         if len(word) > 3 and word in recent_responses:
-            return True
+            # Check if it's not a contextual reference
+            contextual_words = ['these', 'those', 'them', 'that', 'the', 'active', 'open', 'money', 'value']
+            if word not in contextual_words:
+                return True
     
     return False
 
