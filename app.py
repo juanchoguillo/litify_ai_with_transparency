@@ -863,6 +863,9 @@ class LegalAIAssistant:
             print(f"Error generating contextual SOQL: {e}")
             return "SELECT COUNT(Id) FROM litify_pm__Matter__c"
         
+    # The issue is in the _generate_conversational_response method
+# It's overriding your enhanced analyze_results method
+
     def _generate_conversational_response(self, user_message: str, query_results: list, conversation_context: str, soql_query: str) -> str:
         """Generate conversational response using query results and conversation context"""
         
@@ -878,6 +881,14 @@ class LegalAIAssistant:
                     return f"Found {len(query_results)} records."
             return "No results found."
         
+        # ADD THIS CHECK FOR CASE-SPECIFIC QUERIES
+        is_case_lookup = self._is_case_lookup_query(user_message)
+        
+        if is_case_lookup and query_results:
+            # For case-specific queries, use the enhanced analyze_results method instead
+            return self.analyze_results(user_message, query_results)
+        
+        # Rest of the existing conversational response logic for non-case queries
         system_prompt = f"""You are a conversational AI assistant that provides natural responses about legal database queries.
 
         {self.get_date_context()}
@@ -901,17 +912,17 @@ class LegalAIAssistant:
         
         Context: Previously answered "320 active/open matters"
         Question: "what is the money value for these matters?"
-        Results: [{{'expr0': 2500000}}]
+        Results: [{'expr0': 2500000}]
         Response: "The total value for those 320 active/open matters is $2,500,000."
         
         Context: Previously answered about minor cases
         Question: "how much money is involved?"
-        Results: [{{'expr0': 750000}}]
+        Results: [{'expr0': 750000}]
         Response: "The total value for matters involving minors is $750,000."
         
         Context: No previous context
         Question: "How many matters are open?"
-        Results: [{{'expr0': 150}}]
+        Results: [{'expr0': 150}]
         Response: "We have 150 matters that are open or active."
         """
         
@@ -922,7 +933,7 @@ class LegalAIAssistant:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": "Generate a conversational response using the exact database values and conversation context."}
                 ],
-                max_tokens=150,
+                max_tokens=300,
                 temperature=0.1
             )
             
@@ -938,7 +949,7 @@ class LegalAIAssistant:
                 else:
                     return f"The result is {value}."
             return "I had trouble generating a response for that question."
-    
+        
     def process_chat_with_transparency(self, user_message: str, conversation_history: list = None) -> Tuple[str, str, List[Dict]]:
         """Process chat message and return response, SOQL, and raw results for transparency"""
         
